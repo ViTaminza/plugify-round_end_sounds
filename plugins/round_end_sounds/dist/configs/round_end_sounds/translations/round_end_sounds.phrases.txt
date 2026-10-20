@@ -1,0 +1,26 @@
+// Тексты плагина Round End Sounds. Цвета чата: {DEFAULT} {GREEN} {RED} {GOLD} и другие цвета utils.
+// В Now_Playing_Center — HTML центра экрана, {picture} заменяется картинкой трека, если она задана.
+"Phrases"
+{
+	"Prefix"              { "ru" "{GREEN}[♫]{DEFAULT}"  "en" "{GREEN}[♫]{DEFAULT}" }
+	"Now_Playing"         { "ru" "{PREFIX} Сейчас играет: {GREEN}{name}"  "en" "{PREFIX} Now playing: {GREEN}{name}" }
+	"Now_Playing_Center"  { "ru" "<font color='lime'>Сейчас играет:</font> <font color='white'>{name}</font>{picture}"
+	                        "en" "<font color='lime'>Now playing:</font> <font color='white'>{name}</font>{picture}" }
+	"Connect_Hint"        { "ru" "{PREFIX} Введите {GREEN}!res{DEFAULT}, чтобы настроить музыку в конце раунда"
+	                        "en" "{PREFIX} Type {GREEN}!res{DEFAULT} to set up round end music" }
+	"Menu_Title"          { "ru" "Музыка в конце раунда"       "en" "Round end music" }
+	"Menu_State"          { "ru" "Музыка: {state}"             "en" "Music: {state}" }
+	"Menu_Volume"         { "ru" "Громкость: {volume}%"        "en" "Volume: {volume}%" }
+	"Menu_Tracks"         { "ru" "Прослушать трек"             "en" "Listen to a track" }
+	"Menu_Last"           { "ru" "Повторить последний трек"    "en" "Replay last track" }
+	"Volume_Title"        { "ru" "Громкость: {volume}%"        "en" "Volume: {volume}%" }
+	"Volume_Up"           { "ru" "Громче (+10%)"               "en" "Louder (+10%)" }
+	"Volume_Down"         { "ru" "Тише (−10%)"                 "en" "Quieter (−10%)" }
+	"Tracks_Title"        { "ru" "Прослушать трек"             "en" "Listen to a track" }
+	"Preview"             { "ru" "{PREFIX} Прослушивание: {GREEN}{name}"  "en" "{PREFIX} Playing: {GREEN}{name}" }
+	"No_Last"             { "ru" "{PREFIX} На этой карте музыка ещё не играла"  "en" "{PREFIX} No music has played on this map yet" }
+	"State_Set"           { "ru" "{PREFIX} Музыка в конце раунда: {GREEN}{state}"  "en" "{PREFIX} Round end music: {GREEN}{state}" }
+	"On"                  { "ru" "вкл"   "en" "on" }
+	"Off"                 { "ru" "выкл"  "en" "off" }
+	"Settings_Item"       { "ru" "Музыка в конце раунда"  "en" "Round end music" }
+}
