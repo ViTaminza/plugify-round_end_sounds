@@ -1,20 +1,24 @@
 // round_end_sounds — per-player volume of a started soundevent (the SoundVolume module of the
-// original; identical to the module of plugins/quake_sounds, each plugin carries its own copy).
+// original; each plugin carries its own copy, no shared wrapper library).
 //
 // CS2 ignores EmitSound_t::m_flVolume for soundevents, so the original watched
 // IGameEventSystem::PostEventAbstract for GE_SosStartSoundEvent (208) and, for every recipient,
 // immediately sent him a GE_SosSetSoundEventParams (210) naming the same soundevent_guid with a
-// "volume" parameter. This port does the same through s2sdk's user-message API:
+// "volume" parameter. This port does the same through s2sdk's user-message API.
 //
-//   * s2sdk::HookUserMessage(208, cb, HookMode::Post) is the PostEventPost equivalent — s2sdk's
-//     user-message hook polyhooks IGameEventSystem::PostEventAbstract with both modes and hands the
-//     callback the message, whose recipient filter is intact;
-//   * the params message is built with UserMessageCreateFromId(210) + PbSet* and sent to one
-//     recipient mask with UserMessageSend (a low-level CNetMessage::Send, it does not re-enter
-//     the PostEventAbstract hook, so no s2sdk lock is taken again).
+// HARD RULE (network-message ids are not stable across game builds): every message type is
+// resolved by its REAL registry substring on a live map - "SosStartSoundEvent",
+// "SosSetSoundEventParams" and "SosStopSoundEvent". s2sdk's UserMessageCreateFromId() does NOT
+// return null for an unknown id: it constructs an object whose m_msgSerializable/m_msg are null,
+// and GetMessageName/GetMessageID/Pb*/Send then dereference them. Therefore:
+//   * no hard-coded 208/209/210 fallback is ever used;
+//   * an unresolved type makes exactly that functionality a no-op (fail soft);
+//   * UserMessageCreateFromId()/Pb*/Send are only called with an id that the registry lookup
+//     resolved by name on this live map;
+//   * UserMessageGetMessageName() is only used to verify an INCOMING, engine-owned message (which
+//     is valid by construction), never on an object this module created.
 //
-// Message ids are resolved by name at first use ("GE_SosStartSoundEvent"/"GE_SosSetSoundEventParams")
-// and fall back to the well-known 208/210 constants (EBaseGameEvents) when the lookup fails.
+// Binding availability is checked once in Init(); id resolution is retried lazily on live maps.
 
 #pragma once
 
@@ -22,15 +26,23 @@
 
 namespace sound_volume {
 
-// Resolves the message ids and the "volume" parameter hash. Returns false when the s2sdk
-// bindings are missing; every other function is then a no-op.
+// Checks the s2sdk bindings this module needs. No message name is resolved before a map is up.
 bool Init();
+// Drops every id/binding flag again (OnPluginEnd / a `plg reload` followed by OnPluginStart).
+void Reset();
 
-// Message id to pass to s2sdk::HookUserMessage (HookMode::Post); -1 when unavailable.
+// Resolves each still-unresolved message type by its real registry name. Safe to call on live
+// maps only; a failed lookup leaves that type unresolved (s2sdk logs the lookup failure). Returns
+// true when the start type is resolved.
+bool ResolveIds();
+// Per-type state. A false answer means the corresponding functionality must stay a no-op.
+bool StartResolved();
+bool SetResolved();
+bool StopResolved();
+
+// Message ids resolved by name; -1 while that type is unresolved.
 int StartMessageId();
-// Message id of GE_SosSetSoundEventParams; -1 when unavailable.
 int SetMessageId();
-// GE_SosStopSoundEvent (the fade-out of round_end_sounds uses it).
 int StopMessageId();
 
 // s2sdk::UserMessageCallback payload -> (guid, soundevent hash). False when it is not a sos start
@@ -38,6 +50,7 @@ int StopMessageId();
 bool ParseStart(void* pUserMessage, int& iGuid, uint32_t& uHash);
 
 // Volume (1.0 = the soundevent's own) of sound iGuid for one player, and the stop counterpart.
+// Both are no-ops unless the Set/Stop type was resolved by name.
 void Set(int iSlot, int iGuid, float flVolume);
 void Stop(int iSlot, int iGuid);
 

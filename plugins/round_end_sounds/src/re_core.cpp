@@ -1,12 +1,19 @@
 // round_end_sounds — engine-free core (see re_core.hpp).
+//
+// The HEAD port parsed these files through pisex::KeyValues. This port owns the reader
+// (src/kv1.hpp, the same grammar and the same atoi/strtof value semantics) and keeps every rule of
+// the HEAD core unchanged: config defaults, track order, the picker, the phrase lookup, the
+// preview/fade arithmetic, the packed volume parameter and the two-field music kit mute.
+
 #include "re_core.hpp"
 
 #include <algorithm>
 #include <cctype>
 #include <cmath>
 #include <cstring>
+#include <optional>
 
-#include <pisex/keyvalues.hpp>
+#include "kv1.hpp"
 
 namespace res {
 
@@ -52,38 +59,41 @@ std::vector<std::string> SplitList(const std::string& s)
 
 bool ParseConfigText(std::string_view text, Config& cfg)
 {
-	cfg = Config();
-	pisex::KeyValues kv("RoundEndSounds");
-	if (!kv.LoadFromBuffer(text)) return false;
+	const std::optional<KvNode> root = ParseKv1(text);
+	if (!root) return false;
 
+	cfg = Config();
+	const KvNode& kv = *root;
 	cfg.bEnabled = kv.GetInt("enabled", 1) != 0;
-	auto vCommands = SplitList(kv.GetString("commands", "!res,!music"));
+	auto vCommands = SplitList(std::string(kv.GetString("commands", "!res")));
 	if (!vCommands.empty()) cfg.vCommands = vCommands;
 	cfg.bRandom = kv.GetInt("random", 1) != 0;
 	cfg.bDefaultEnabled = kv.GetInt("default_enabled", 1) != 0;
 	cfg.iDefaultVolume = std::clamp((int)lroundf(kv.GetFloat("default_volume", 0.5f) * 100.0f), 0, 100);
-	cfg.sMessage = Lower(kv.GetString("message", "chat"));
+	cfg.sMessage = Lower(std::string(kv.GetString("message", "chat")));
 	cfg.iCenterTime = std::max(1, kv.GetInt("center_time", 7));
 	cfg.bMuteMvpAnthem = kv.GetInt("mute_mvp_anthem", 1) != 0;
 	cfg.flFadeBeforeRound = std::max(0.0f, kv.GetFloat("fade_before_round", 1.0f));
 	cfg.bUtilsSettings = kv.GetInt("utils_settings", 1) != 0;
 	cfg.bConnectHint = kv.GetInt("connect_hint", 1) != 0;
 	cfg.bDebug = kv.GetInt("debug", 0) != 0;
-	cfg.vPrecache = SplitList(kv.GetString("precache", ""));
+	cfg.vPrecache = SplitList(std::string(kv.GetString("precache", "")));
 
-	if (pisex::KeyValues* pTracks = kv.FindKey("tracks"))
+	if (const KvNode* pTracks = kv.Find("tracks"))
 	{
-		for (pisex::KeyValues* pTrack = pTracks->GetFirstSubKey(); pTrack; pTrack = pTrack->GetNextKey())
+		for (const KvNode& pTrack : pTracks->children)
 		{
 			Track t;
-			t.sName = pTrack->GetName();
-			if (pTrack->GetFirstSubKey())
+			t.sName = pTrack.name;
+			if (!pTrack.children.empty())
 			{
-				t.sSound = pTrack->GetString("sound", "");
-				t.sPicture = pTrack->GetString("picture", "");
+				t.sSound = std::string(pTrack.GetString("sound", ""));
+				t.sPicture = std::string(pTrack.GetString("picture", ""));
 			}
-			else
-				t.sSound = pTrack->GetString(nullptr, ""); // short form: "Name" "sound"
+			else if (pTrack.hasValue)
+			{
+				t.sSound = pTrack.value; // short form: "Name" "sound"
+			}
 			if (!t.sSound.empty()) cfg.vTracks.push_back(std::move(t));
 		}
 	}
@@ -218,6 +228,10 @@ const std::vector<DefaultPhrase>& DefaultPhrases()
 		{"On", "вкл", "on"},
 		{"Off", "выкл", "off"},
 		{"Settings_Item", "Музыка в конце раунда", "Round end music"},
+		// The s2sdk menu has an exit button of its own; the sub-menus need an explicit "back"
+		// item (s2sdk offers either the exit or the exit-back button, not both), so its label is
+		// built in here. A production phrases file may override it under the same key.
+		{"Back", "Назад", "Back"},
 	};
 	return v;
 }
@@ -226,13 +240,18 @@ bool ParsePhrasesText(std::string_view text, const std::string& sServerLang,
 					  std::map<std::string, std::string>& mapPhrases)
 {
 	mapPhrases.clear();
-	pisex::KeyValues kv("Phrases");
-	if (!kv.LoadFromBuffer(text)) return false;
-	for (pisex::KeyValues* pKey = kv.GetFirstTrueSubKey(); pKey; pKey = pKey->GetNextTrueSubKey())
+	const std::optional<KvNode> root = ParseKv1(text);
+	if (!root) return false;
+	for (const KvNode& key : root->children)
 	{
-		const char* sz = pKey->GetString(sServerLang.c_str(), "");
-		if (!sz[0]) sz = pKey->GetString("en", "");
-		if (sz[0]) mapPhrases[pKey->GetName()] = sz;
+		if (key.children.empty()) continue; // a plain value, not a phrase block
+		std::string sText;
+		if (const KvNode* localized = key.Find(sServerLang); localized && localized->hasValue)
+			sText = localized->value;
+		if (sText.empty())
+			if (const KvNode* english = key.Find("en"); english && english->hasValue)
+				sText = english->value;
+		if (!sText.empty()) mapPhrases[key.name] = std::move(sText);
 	}
 	return true;
 }
@@ -251,6 +270,26 @@ std::string Phrase(const std::map<std::string, std::string>& mapPhrases, const s
 	}
 	if (sKey != "Prefix") s = Replace(s, "{PREFIX}", Phrase(mapPhrases, sServerLang, "Prefix"));
 	return s;
+}
+
+std::string NormalizeLanguage(std::string_view name)
+{
+	std::string lower;
+	lower.reserve(name.size());
+	for (const char c : name)
+		lower.push_back((char)std::tolower((unsigned char)c));
+	// Source language names -> the codes used by the phrase files (pisexcompat's table).
+	if (lower == "russian" || lower == "ru") return "ru";
+	if (lower == "english" || lower == "en") return "en";
+	if (lower == "ukrainian" || lower == "ua" || lower == "uk") return "ua";
+	if (lower == "portuguese" || lower == "pt-br" || lower == "brazilian") return "pt-BR";
+	if (lower == "spanish" || lower == "es") return "es";
+	if (lower == "german" || lower == "de") return "de";
+	if (lower == "french" || lower == "fr") return "fr";
+	if (lower == "polish" || lower == "pl") return "pl";
+	if (lower == "turkish" || lower == "tr") return "tr";
+	if (lower == "schinese" || lower == "zh-cn") return "zh-CN";
+	return std::string(name);
 }
 
 bool IsService(const std::string& sBack)

@@ -8,8 +8,7 @@
         /* permissions binding slots (optional dependency) */
         __permissions_*;
 
-        /* hudmenu binding slots - pisexcompat resolves every displayed menu through
-           __hudmenu_GetClientMenuType when the hudmenu plugin is installed */
+        /* hudmenu binding slots (optional dependency: the player's own menu type) */
         __hudmenu_*;
 
         /* No exported methods: round_end_sounds exposes nothing to other plugins. */

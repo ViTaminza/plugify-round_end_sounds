@@ -1,13 +1,25 @@
-// Tests for plugins/round_end_sounds/src/re_core.hpp (the engine-free core of the ported
-// cs2-round-end-sounds).
+// Tests for plugins/round_end_sounds/src/re_core.* and its engine-free helpers (the core of the
+// pure-s2sdk port of cs2-round-end-sounds).
 //
 //   * config parsing against a real round_end_sounds.ini of the original (93 Alko.Track.*
-//     soundevents of workshop addon 3811020435),
-//   * the track picker (random without repeats / in order), the phrase table, the preview and
-//     fade arithmetic, the packed GE_SosSetSoundEventParams volume parameter and the two-field
-//     music kit mute rules (m_iMusicKitID / m_unMusicID).
+//     soundevents of workshop addon 3811020435) through the plugin-local KV1 reader, including the
+//     short form, comments, a BOM, malformed input and the atoi/strtof value semantics;
+//   * the phrase table (selected language -> en, the built-in ru/en defaults), the cs2-menus colour
+//     bytes, NormalizeLanguage;
+//   * the track picker (random without repeats / in order), the preview and fade arithmetic, the
+//     packed GE_SosSetSoundEventParams volume parameter and the two-field music kit mute rules
+//     (m_iMusicKitID / m_unMusicID);
+//   * the entity-handle value rule (0/-1 invalid, a valid negative handle accepted) and every
+//     transition of the B1/B2 map gate.
+//
+// Engine-free: no s2sdk, no Plugify host, no engine. Run by ../test.sh
+// (build/tests/round_end_sounds_tests).
 
-#include <plg/plugin.hpp>
+#include "ent_handle.hpp"
+#include "kv1.hpp"
+#include "map_gate.hpp"
+#include "re_core.hpp"
+#include "text.hpp"
 
 #include <cstdint>
 #include <cstdio>
@@ -18,24 +30,8 @@
 #include <string_view>
 #include <vector>
 
-#include "re_core.hpp"
-
-// The plugin gets these from PLUGIFY_PLUGIN; pisexcompat references them, the test leaves them null.
-namespace plg {
-GetBaseDirFn GetBaseDir{nullptr};
-GetExtensionsDirFn GetExtensionsDir{nullptr};
-GetConfigsDirFn GetConfigsDir{nullptr};
-GetDataDirFn GetDataDir{nullptr};
-GetLogsDirFn GetLogsDir{nullptr};
-GetCacheDirFn GetCacheDir{nullptr};
-IsLoadedFn IsLoaded{nullptr};
-LogFn Log{nullptr};
-BeginZoneFn BeginZone{nullptr};
-EndZoneFn EndZone{nullptr};
-} // namespace plg
-
-#ifndef RES_TEST_DATA_DIR
-#define RES_TEST_DATA_DIR "."
+#ifndef ROUND_END_SOUNDS_TEST_DATA_DIR
+#define ROUND_END_SOUNDS_TEST_DATA_DIR "."
 #endif
 
 namespace {
@@ -88,8 +84,9 @@ void Section(std::string_view name)
 
 std::string ReadTestFile(const std::string& sRelative)
 {
-	std::ifstream file(std::string(RES_TEST_DATA_DIR) + "/" + sRelative, std::ios::binary);
-	if (!file) {
+	std::ifstream file(std::string(ROUND_END_SOUNDS_TEST_DATA_DIR) + "/" + sRelative, std::ios::binary);
+	if (!file)
+	{
 		std::printf("FATAL: cannot read %s\n", sRelative.c_str());
 		++g_failures;
 		return {};
@@ -134,9 +131,10 @@ void TestConfig()
 	}
 	CHECK_EQ_INT(res::BuildOwnEvents(cfg.vTracks, &res::SoundEventHash).size(), 93);
 
-	Section("config: in-memory variants (short form, picture, sounds/ path)");
+	Section("config: in-memory variants (short form, picture, sounds/ path, BOM, comments)");
 	res::Config cfg2;
-	CHECK(res::ParseConfigText(R"(
+	CHECK(res::ParseConfigText("\xEF\xBB\xBF" + std::string(R"(
+// a line comment
 "RoundEndSounds"
 {
 	"enabled" "0"
@@ -145,6 +143,7 @@ void TestConfig()
 	"center_time" "0"
 	"fade_before_round" "0"
 	"precache" "soundevents/a.vsndevts, sounds/b.vsnd"
+	/* a block comment */
 	"tracks"
 	{
 		"Short" "sounds/music/track.vsnd"
@@ -152,7 +151,7 @@ void TestConfig()
 		"NoSound" { "picture" "https://example.org/c.gif" }
 	}
 }
-)", cfg2));
+)"), cfg2));
 	CHECK(!cfg2.bEnabled);
 	CHECK_EQ_STR(cfg2.sMessage, "center"); // lowered
 	CHECK_EQ_INT(cfg2.iDefaultVolume, 100);
@@ -165,6 +164,12 @@ void TestConfig()
 	CHECK(res::IsFilePathSound(cfg2.vTracks[0].sSound));
 	CHECK_EQ_STR(cfg2.vTracks[1].sPicture, "https://example.org/c.gif");
 	CHECK_EQ_INT(res::BuildOwnEvents(cfg2.vTracks, &res::SoundEventHash).size(), 1);
+
+	Section("config: malformed input is rejected as a whole");
+	res::Config cfg3;
+	cfg3.bDebug = true; // the caller's object must not be half-overwritten on failure
+	CHECK(!res::ParseConfigText("\"RoundEndSounds\" { \"enabled\" \"0\" ", cfg3));
+	CHECK(!res::ParseConfigText("\"RoundEndSounds\" { \"enabled\" \"unterminated }", cfg3));
 }
 
 void TestPicker()
@@ -233,6 +238,28 @@ void TestPhrases()
 	CHECK_EQ_STR(res::Phrase(empty, "ru", "On"), "вкл");
 	CHECK_EQ_STR(res::Phrase(empty, "en", "On"), "on");
 	CHECK_EQ_STR(res::Phrase(empty, "en", "Off"), "off");
+	CHECK_EQ_STR(res::Phrase(empty, "ru", "Back"), "Назад");
+	CHECK_EQ_STR(res::Phrase(empty, "en", "Exit"), "Exit");
+
+	Section("phrases: language fallback and the built-in table");
+	// selected language -> "en"; a missing language leaves the key to the built-in table (HEAD's
+	// parser, unlike pisexcompat, did not take the first language of the file)
+	std::map<std::string, std::string> mixed;
+	CHECK(res::ParsePhrasesText(R"("Phrases" { "Prefix" { "ru" "[П]" } "On" { "de" "an" } })", "ru", mixed));
+	CHECK_EQ_STR(mixed.count("Prefix") ? mixed["Prefix"] : "", "[П]");
+	CHECK_EQ_INT(mixed.count("On"), 0); // de is neither ru nor en: built-in default
+	CHECK_EQ_STR(res::Phrase(mixed, "ru", "On"), "вкл");
+	std::map<std::string, std::string> fallback;
+	CHECK(res::ParsePhrasesText(R"("Phrases" { "On" { "en" "on-en" } })", "ru", fallback));
+	CHECK_EQ_STR(fallback["On"], "on-en");
+
+	Section("normalize language");
+	CHECK_EQ_STR(res::NormalizeLanguage("russian"), "ru");
+	CHECK_EQ_STR(res::NormalizeLanguage("RUSSIAN"), "ru");
+	CHECK_EQ_STR(res::NormalizeLanguage("english"), "en");
+	CHECK_EQ_STR(res::NormalizeLanguage("ukrainian"), "ua");
+	CHECK_EQ_STR(res::NormalizeLanguage("schinese"), "zh-CN");
+	CHECK_EQ_STR(res::NormalizeLanguage("klingon"), "klingon");
 
 	Section("menu service / preview / fade helpers");
 	CHECK(res::IsService("back"));
@@ -308,6 +335,55 @@ void TestHandles()
 	CHECK(res::IsValidHandle(93));
 	CHECK(!res::IsValidHandle(0));  // index 0 serial 0 = the world, and the "none" of the helpers
 	CHECK(!res::IsValidHandle(-1)); // INVALID_EHANDLE_INDEX (0xFFFFFFFF)
+	CHECK(res::IsValidEntityHandleValue(-921534371));
+	CHECK(res::IsValidEntityHandleValue(93));
+	CHECK(!res::IsValidEntityHandleValue(0));
+	CHECK(!res::IsValidEntityHandleValue(-1));
+}
+
+void TestColorize()
+{
+	Section("cs2-menus colour tags");
+	CHECK_EQ_STR(res::Colorize("{GREEN}[♫]{DEFAULT}"), std::string("\x04") + "[♫]" + std::string("\x01"));
+	CHECK_EQ_STR(res::Colorize("{PREFIX} {GREEN}x{DEFAULT}"), "{PREFIX} \x04x\x01");
+	CHECK_EQ_STR(res::Colorize("{RED}{BLUE}{GRAYBLUE}"), std::string("\x02\x0C\x0A"));
+	CHECK_EQ_STR(res::Colorize("line\\nbreak"), std::string("line\xe2\x80\xa9") + "break");
+	CHECK_EQ_STR(res::Colorize("no tags"), "no tags");
+}
+
+void TestMapGate()
+{
+	Section("map gate (PITFALLS B1/B2)");
+	res::MapGate gate;
+	CHECK(!gate.Ready()); // before the first map / after OnPluginStart
+	gate.OnMapStart();
+	CHECK(gate.Ready());
+	gate.OnMapEnd();
+	CHECK(!gate.Ready());
+	// updates the host keeps pumping through a changelevel must not reopen the gate
+	gate.OnPluginUpdate();
+	CHECK(!gate.Ready());
+	gate.OnMapStart();
+	CHECK(gate.Ready());
+	gate.Close();
+	CHECK(!gate.Ready());
+	gate.OnPluginUpdate(); // updates after OnPluginEnd are inert
+	CHECK(!gate.Ready());
+
+	// a plugin loaded into a running map never sees OnMapStart: its first update opens the gate,
+	// but only with the map listeners registered
+	res::MapGate reloaded;
+	reloaded.OnPluginUpdate();
+	CHECK(!reloaded.Ready());
+	reloaded.SetListenersRegistered(true);
+	reloaded.OnPluginUpdate();
+	CHECK(reloaded.Ready());
+	// after OnMapEnd only a new OnMapStart may reopen it
+	reloaded.OnMapEnd();
+	reloaded.OnPluginUpdate();
+	CHECK(!reloaded.Ready());
+	reloaded.OnMapStart();
+	CHECK(reloaded.Ready());
 }
 
 } // namespace
@@ -320,6 +396,8 @@ int main()
 	TestMusicKit();
 	TestHashes();
 	TestHandles();
+	TestColorize();
+	TestMapGate();
 
 	std::printf("%d checks, %d failures\n", g_checks, g_failures);
 	return g_failures == 0 ? 0 : 1;

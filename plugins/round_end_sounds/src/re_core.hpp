@@ -1,12 +1,20 @@
-// round_end_sounds — engine-free core of the port (config, track picking, phrases, player state).
+// round_end_sounds — engine-free core of the pure-s2sdk port (config, track picking, phrases,
+// player state).
 //
-// The reference is the Metamod plugin cs2-round-end-sounds (itself a port of Stimayk/RoundEndSounds):
-// music at the end of the round, with a per-player on/off switch and volume, a preview menu and the
-// "mute the MVP anthem" trick for players whose music kit would otherwise play over the track.
+// The reference is the Metamod plugin cs2-round-end-sounds (itself a port of
+// Stimayk/RoundEndSounds): music at the end of the round, with a per-player on/off switch and
+// volume, a preview menu and the "mute the MVP anthem" trick for players whose music kit would
+// otherwise play over the track.
 //
-// Everything that needs the engine (events, sound emission, schema fields) lives in src/plugin.cpp;
-// this core keeps the decisions, so test/re_core_tests.cpp can drive it against the real
-// round_end_sounds.ini (Alko.Track.* soundevents of workshop addon 3811020435).
+// Everything that needs the engine (events, sound emission, schema fields, menus) lives in
+// src/plugin.cpp; this core keeps the decisions, so round_end_sounds_core_tests and
+// round_end_sounds_runtime_tests can drive it against the real round_end_sounds.ini
+// (Alko.Track.* soundevents of workshop addon 3811020435).
+//
+// HEAD parity: the public API and every rule below (`IsValidHandle`, the picker, PreviewVolume,
+// FadeFactor, the Kit* helpers, the MurmurHash2 soundevent hash and the packed
+// GE_SosSetSoundEventParams parameter) are the HEAD port's, moved off pisexcompat: the config and
+// phrases are parsed by the plugin-local KV1 reader (src/kv1.hpp), not by pisex::KeyValues.
 
 #pragma once
 
@@ -43,7 +51,7 @@ struct Track
 struct Config
 {
 	bool bEnabled = true;
-	std::vector<std::string> vCommands = {"!res", "!music"};
+	std::vector<std::string> vCommands = {"!res"};
 	bool bRandom = true;
 	bool bDefaultEnabled = true;
 	int iDefaultVolume = 50; // percent
@@ -58,7 +66,8 @@ struct Config
 	std::vector<Track> vTracks;
 };
 
-// Parses round_end_sounds.ini (KeyValues text).
+// Parses round_end_sounds.ini (KeyValues text). Returns false for a malformed document; the
+// caller keeps its previous configuration then (fail soft, PLUGIN_STANDARD §7).
 bool ParseConfigText(std::string_view text, Config& cfg);
 
 // Records that carry a soundevent (i.e. whose volume can be controlled) as hash -> true.
@@ -89,10 +98,16 @@ struct DefaultPhrase
 	const char* szEn;
 };
 const std::vector<DefaultPhrase>& DefaultPhrases();
+// Parses round_end_sounds.phrases.txt: every block child resolved for sServerLang, then "en".
+// (The HEAD parser did not add the "any language" last resort pisexcompat had; the production
+// file always carries ru+en, and the built-in table below covers a missing key.)
 bool ParsePhrasesText(std::string_view text, const std::string& sServerLang,
 					  std::map<std::string, std::string>& mapPhrases);
 std::string Phrase(const std::map<std::string, std::string>& mapPhrases, const std::string& sServerLang,
 				   const std::string& sKey);
+// Maps a Source language name ("russian", "portuguese", ...) to the phrase-file code ("ru",
+// "pt-BR", ...). Exactly pisexcompat's NormalizeLanguage(), which produced the HEAD language.
+std::string NormalizeLanguage(std::string_view name);
 
 // --- per-player state ------------------------------------------------------------------------
 struct PlayerData
